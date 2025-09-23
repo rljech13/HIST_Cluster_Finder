@@ -5,7 +5,10 @@ The workflow was originally tested on chicken (Gallus gallus), then extended to 
 
 ---
 
+You can use environment.yml file to create a conda env that i used
+
 ## How it works
+
 
 **0. Initial dataset**  
 - Identify histone cluster in chicken genome.  
