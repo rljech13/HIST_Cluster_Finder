@@ -1,0 +1,25 @@
+name: histone_env
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - python=3.11
+  - liftoff
+  - bedtools
+  - minimap2
+  - blast
+  - repeatmasker
+  - rmblast
+  - augustus
+  - gffread
+  - mafft
+  - matplotlib
+  - biopython
+  - seqtk
+  - pandas
+  - fasttree
+  - adjusttext
+  - trimal
+  - iqtree
+  - bioconda::newick_utils
+prefix: your_prefix
