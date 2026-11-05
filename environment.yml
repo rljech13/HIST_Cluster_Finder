@@ -1,25 +1,13 @@
-name: histone_env
+name: gene-context
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
 dependencies:
   - python=3.11
-  - liftoff
-  - bedtools
-  - minimap2
-  - blast
-  - repeatmasker
-  - rmblast
-  - augustus
-  - gffread
-  - mafft
-  - matplotlib
-  - biopython
-  - seqtk
-  - pandas
-  - fasttree
-  - adjusttext
-  - trimal
-  - iqtree
-  - bioconda::newick_utils
-prefix: your_prefix
+  - samtools>=1.19
+  - miniprot>=0.18
+  - blast>=2.15
+  - mafft>=7.520
+  - pip
+  - pip:
+      - -e .

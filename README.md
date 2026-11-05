@@ -1,115 +1,130 @@
-# HIST_Cluster_Finder
+# Sequence-driven gene and context finder
 
-A smal pipeline to identify and analyze histone clusters (with focus on **H2B7**) across vertebrate genomes.  
-The workflow was originally tested on chicken (Gallus gallus), then extended to all avians, crocodile and other taxa.
+Give the pipeline **DNA or protein sequences and a collection of genomes**. It searches every supplied genome, recovers candidate coding models, extracts CDS, proteins, gene regions and strand-oriented flanks, and produces alignments. It has no built-in gene names, species list or histone filters.
 
----
+This is the new entry point for HIST_Cluster_Finder. The original root-level H2B7/AUGUSTUS scripts remain legacy research code and are not called by this workflow. Their environment and outputs are not interchangeable with this version.
 
-You can use environment.yml file to create a conda env that i used
+## Install
 
-## How it works
+See [setup, downloads and first-run instructions](docs/SETUP_AND_DOWNLOAD.md) for cloning the implementation branch, verified genome downloads, example query sequences and server commands.
 
-
-**0. Initial dataset**  
-- Identify histone cluster in chicken genome.  
-- Extract H2B7 and ±2 neighboring proteins.  
-
-**1. Find histone clusters**  
 ```bash
-bash find_histone_clusters.sh
+conda env create -f environment.yml
+conda activate gene-context
+gene-context doctor
 ```
 
-Edit directories inside the script before running.
+Alternatively, install Python >=3.10 and `samtools`, `miniprot`, NCBI BLAST+ (`blastn`, `blastp`, `makeblastdb`) and `mafft` on PATH, then `python -m pip install -e .`. You can also run `python -m genecontext` directly from this checkout. The Python package uses only the standard library. The environment file constrains compatible versions; it is not a platform-specific lockfile. Exact tool versions and commands are recorded per run.
 
-2. Parse proteins from GFF
+## Run
 
-python3 parse_gff_proteins.py <genome_histone_dir> -o chick_check.fa
+Protein input, including target genes with introns:
 
-3. Identify H2B7 with BLAST
+```bash
+gene-context run --query targets.faa --query-type protein \
+  --genomes genomes.tsv --out results/protein_search --threads 8
+```
 
-bash blast_h2b7_per_fasta.sh chick_check.fa cluster5_genes.faa check_dir
+Coding DNA input (spliced, intron-free CDS in coding orientation):
 
-4. Curate metadata manually.
+```bash
+gene-context run --query targets.cds.fna --query-type cds \
+  --genomes genomes.tsv --out results/cds_search --threads 8
+```
 
-5. Plot clusters
+Arbitrary genomic/noncoding DNA input:
 
-python3 plot_h2b7_clusters.py --hits hits_marked.tsv --histones histones_dir --outdir check_dir
+```bash
+gene-context run --query region.fna --query-type dna \
+  --genomes genomes.tsv --out results/dna_search --flank 5000 --context 50000
+```
 
-6. Filter contextual H2B7 FASTA
+Search a directory recursively, including ordinary gzip-compressed FASTA:
 
-python3 filter_h2b7_by_context.py \
-  --hits_tsv hits_marked.tsv \
-  --hits_fa  hits_marked.fa \
-  --meta     meta.tsv \
-  --outdir   h2b7_fasta_ctx \
-  --prefix   peng_ctx
+```bash
+gene-context run --query targets.faa --query-type protein \
+  --genome-dir /path/to/genomes --out results/all_genomes
+```
 
-! For crocodiles, synteny-based search fails (closest homolog is not H2B7).
+Multiple queries of the same type can be supplied in one FASTA. Query type is explicit because DNA letters are also valid amino-acid letters. Internal `q0001` IDs map to original query names in `manifest.json`. Protein/CDS queries must encode at least 30 amino acids. This release supports the standard nuclear genetic code only.
 
-7. Manual curation
-Keep only real H2B7 sequences and double-check genomes.
+## Download genomes
 
-8. Add query histones
-Extend curated FASTA with candidate H2B7s.
+```bash
+gene-context download --manifest examples/vertebrates18.download.tsv \
+  --out data/vertebrates18 --only GCF_016699485.2 --dry-run
+gene-context download --manifest examples/vertebrates18.download.tsv \
+  --out data/vertebrates18 --only GCF_016699485.2
+```
 
-9. Multiple sequence alignment (MSA)
+This creates a verified `data/vertebrates18/genomes.tsv` ready for `run --genomes`. Downloads are checked against official source MD5 files. Omit `--only` for the complete optional panel; use your own download manifest for other assemblies. See the detailed guide for storage requirements and the two unannotated assembly exceptions.
 
-mafft --localpair --maxiterate 1000 --thread 16 input.faa > aligned.faa
+## Genome manifest and annotations
 
-10. Trim alignment (Trimal)
+`genomes.tsv` is tab-separated:
 
-trimal -in aligned.faa -out aligned.trim.faa -automated1
+```tsv
+genome_id	fasta	gff3
+assembly_1	genomes/assembly_1.fna	annotations/assembly_1.gff3
+assembly_2	genomes/assembly_2.fna.gz
+```
 
-11. Visualize MSA
-(e.g., MView).
+Paths are relative to the manifest file, or absolute. `gff3` is optional. Use the annotation for the **exact assembly**, with matching FASTA contig IDs. FASTA and GFF3 can be gzipped. Convert GTF to GFF3 first. CDS Parent relationships define transcripts, including isoforms; gene features supply named neighbours. Missing annotation does not establish gene-free flanks.
 
-12. Curate representatives per species
-Merge into all_for_tree.fa.
+Directory mode searches every FASTA recursively. Duplicate file stems require an explicit manifest with unique IDs. Directory mode does not guess annotation associations. Each file is an assembly observation: multiple assemblies of one species are not automatically merged into a copy count.
 
-13. Clean FASTA headers
+Inputs are read-only. Indices are created inside the run directory. Ordinary gzip inputs are decompressed there: allow space for uncompressed genomes and search indices. Use a new or empty output directory for each run. Stale results are not silently reused.
 
-awk '/^>/{gsub(/[ \t()]/,"_"); print; next} {print}' all_h2b7.faa \
-  | awk '/^>/{h=$0; if (seen[h]++) {printf("%s_DUP%d\n",h,seen[h]);} else {print h}} !/^>/' \
-  > all_h2b7.clean.faa
+## What the pipeline does
 
-14. Final alignment & trimming
+1. **Protein:** miniprot searches every whole genome with splice-aware alignment, retaining secondary candidates rather than only the best hit. Default gates: >=50% query coverage and >=30% amino-acid identity. Search/reporting controls include `--max-intron`, `--max-hits` and `--secondary-ratio`.
+2. **CDS:** translate the query, run the protein-to-genome route, and also run BLASTN. A terminal query stop is optional; internal stops and ambiguous coding triplets are rejected.
+3. **DNA:** BLASTN searches all contigs on both strands. Passing HSPs overlapping annotated coding exons identify candidate transcripts. A complete unambiguous ATG-to-stop ORF in the query additionally enables the protein route, with that inference recorded. Otherwise, DNA without a matching coding annotation remains a DNA-region result. **Arbitrary DNA does not uniquely determine CDS/protein.** Supply an annotation or a known CDS/protein query for coding reconstruction.
+4. Overlapping annotated models found through the protein route undergo a separate BLASTP check. Exact exon-coordinate duplicate models are merged, preferring annotation; distinct isoforms and loci remain separate. Counts of transcript models are not gene copy counts.
+5. Re-extract CDS from source exons in transcript order and translate. Internal phases are checked without deleting bases from split codons. Separate terminal-stop features are handled explicitly. Missing start/stop gives a partial model; frameshifts, internal stops, ambiguous CDS and inconsistent phases give a disrupted model. All statuses remain in the inventory.
+6. Extract gene+flank DNA and separate upstream/downstream windows in gene orientation. Flanks are anchored on the coding model, not a measured TSS. Record contig-boundary clipping. Retrieve annotated genes within the context radius and draw a native-coordinate context SVG.
 
-mafft --localpair --maxiterate 1000 --thread -1 all_h2b7.clean.faa > all_h2b7.mafft.faa
-trimal -in all_h2b7.mafft.faa -out all_h2b7.trim.faa -automated1
+DNA defaults: >=70% identity, E <=1e-5, HSP length >=30 bp. CDS associations need >=30 genomic CDS-overlap bases per HSP and >=10% union of query HSP spans (`--min-dna-coverage`). These are discovery criteria, not orthology proof. Same-orientation HSPs within 10 kb are merged only for region export; the region can contain several genes. Original BLAST/miniprot evidence is retained. Thresholds are operational and should be tuned to divergence, gene length, repeats and assembly quality.
 
-15. Build phylogenetic tree
+## Alignments
 
-iqtree -s all_h2b7.trim.faa -m MFP -bb 1000 -alrt 1000 -nt 32 -seed 42 -pre all_h2b7
+MAFFT aligns proteins per query across qualifying candidates. CDS alignments are **backtranslated from protein alignments**, with exact codon/protein checks. Protein-only references have no invented reference CDS. Known query CDS supplies both. Terminal stops remain in CDS exports but are excluded from codon alignments.
 
-16. Root tree
+Upstream/downstream windows are aligned separately in existing gene orientation. Whole gene+flank alignment is opt-in (`--align-locus`) because introns and distant flanks may be long and poorly alignable. Complete predicted models enter alignments by default; `--include-partial` allows clean incomplete models. Disrupted models remain exported and are excluded. Arbitrary DNA queries also get DNA-region and region-flank alignments, even when no CDS model can be recovered. `--skip-alignments` runs search/extraction only.
 
-nw_reroot -l all_h2b7.treefile "H2B7_Gallus_gallus" > all_h2b7.rooted.nwk
+Pairwise tables report identity and paired-position coverage. Gaps and ambiguous characters are excluded from comparable positions. Flank alignments are exploratory: identity and coverage must be considered together. An alignment does not demonstrate CRE activity, expression, individual-copy orthology or conserved function.
 
-17. Visualization
-Prepare ITOL metadata for annotation and beauty.
+`--max-alignment-bases` bounds each input alignment set (default 2 million residues/bases). Exceeding it produces an explicit recorded error after extraction. Raise the limit or run extraction only; no arbitrary subset is silently selected.
 
-18. Synteny and exact match counts
-Performed via awk one-liners (see scripts for details).
+## Outputs
 
-⸻
+Open `report.html` first for a filterable overview of every input genome and links to recovered contexts.
 
-Notes
-	•	Steps 4 & 6 require manual curation.
-	•	Chicken genome serves as the anchor (reference H2B7).
-	•	For taxa with weak synteny conservation (e.g., crocodiles), BLAST-only approaches may fail.
+| Path | Content |
+| --- | --- |
+| `report.html` | Filterable overview and context links |
+| `genome_query_summary.tsv` | Every genome/query, including no hits and errors |
+| `models.tsv` | Candidate transcripts, integrity, native coordinates, exon structure, evidence and flank completeness |
+| `dna_regions.tsv` | DNA-hit envelopes, including matches without a coding model |
+| `neighbors.tsv` | Annotated context genes for each coding model |
+| `sequences/q0001/` | CDS, proteins, gene+flank DNA and separate oriented flanks across genomes |
+| `genomes/<id>/models.gff3` | Coding models on native assembly coordinates |
+| `genomes/<id>/*.context.svg` | Context overview; recovered model in blue |
+| `genomes/<id>/dna_regions.fna`, `dna_regions.with_flanks.fna` | DNA-hit regions, with and without flanks, in query-relative orientation |
+| `genomes/<id>/miniprot.gff3`, `blastn.tsv` | Original search evidence when relevant |
+| `alignments/q0001/` | Protein, codon-CDS and flank alignments, pairwise comparisons |
+| `manifest.json` | Input hashes, parameters, tool versions, commands and errors |
 
-⸻
+TSV coordinates are **0-based, half-open on the original genome**; GFF3 is 1-based, inclusive. FASTA headers link to model IDs. Zero-length flanks are omitted from FASTA and recorded as such in the model table.
 
-Requirements
-	•	Bash, Python 3
-	•	MAFFT
-	•	Trimal
-	•	IQ-TREE
-	•	Newick Utilities
+A failed genome is recorded and the others are still processed. Exit codes: 1 for genome/alignment errors, 2 for invalid configuration, 0 for successful processing (including valid no-hit searches). No hit means not detected under these methods, not gene loss. Miniprot is less sensitive to distant homologs, and search reporting caps mean this is not a guaranteed exhaustive census.
 
-⸻
+## Tests
 
-Citation
+```bash
+python -m unittest discover -s tests -v
+```
 
-If you use this pipeline, please cite this repository:
-https://github.com/rljech13/HIST_Cluster_Finder
+Unit tests cover exon phases, strand-aware extraction, integrity, codon alignment and inputs. Integration tests use real external tools when installed and are explicitly skipped otherwise.
+
+Methods: [miniprot](https://github.com/lh3/miniprot), [NCBI BLAST+](https://www.ncbi.nlm.nih.gov/books/NBK279690/), [samtools faidx](https://www.htslib.org/doc/samtools-faidx.html), [MAFFT](https://mafft.cbrc.jp/alignment/software/).
